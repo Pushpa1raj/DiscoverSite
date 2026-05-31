@@ -179,6 +179,10 @@ Return ONLY valid JSON (no markdown, no explanation) with this exact structure:
     }))
   };
 
+  // 60-second timeout to avoid hanging the request for minutes on NIM cold starts
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 60_000);
+
   try {
     const response = await fetch(`${baseUrl}/chat/completions`, {
       method: "POST",
@@ -187,6 +191,7 @@ Return ONLY valid JSON (no markdown, no explanation) with this exact structure:
         "Authorization": `Bearer ${apiKey}`,
         "Accept": "text/event-stream"
       },
+      signal: controller.signal,
       body: JSON.stringify({
         model,
         max_tokens: 16384,
@@ -200,6 +205,8 @@ Return ONLY valid JSON (no markdown, no explanation) with this exact structure:
         ]
       })
     });
+
+    clearTimeout(timeout);
 
     if (!response.ok) {
       console.error(`[geoAiEngine] NIM API returned ${response.status}: ${response.statusText}`);
@@ -232,7 +239,12 @@ Return ONLY valid JSON (no markdown, no explanation) with this exact structure:
       }))
     };
   } catch (error) {
-    console.error("[geoAiEngine] NIM API call failed:", error);
+    clearTimeout(timeout);
+    if (error instanceof DOMException && error.name === "AbortError") {
+      console.error("[geoAiEngine] NIM API call timed out after 60s — falling back to heuristic analysis");
+    } else {
+      console.error("[geoAiEngine] NIM API call failed:", error);
+    }
     return undefined;
   }
 }

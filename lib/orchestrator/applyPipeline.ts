@@ -1,4 +1,4 @@
-import { access } from "node:fs/promises";
+import { access, mkdir } from "node:fs/promises";
 import path from "node:path";
 
 import { getRunContext } from "@/lib/state/runStore";
@@ -9,7 +9,7 @@ import {
   createBranch,
   createCommit,
   createOptimizedCopy,
-  installDependencies
+  installDependencies,
 } from "@/lib/services/safeRepoManager";
 import { runStaticAnalysis } from "@/lib/services/staticAnalysisEngine";
 import { runValidation } from "@/lib/services/validationEngine";
@@ -49,35 +49,46 @@ export async function runApplyPipeline(
   if (hasSourceRepo) {
     await createOptimizedCopy(context.sourcePath, optimizedPath);
   } else {
-    const { mkdir } = await import("node:fs/promises");
     await mkdir(optimizedPath, { recursive: true });
   }
 
   await applyFixes(optimizedPath, selectedFixes);
 
-  if (hasSourceRepo) {
-    await installDependencies(optimizedPath);
-  }
+  let postStatic: StaticAnalysisResult;
 
-  let postStatic: StaticAnalysisResult = {
-    findings: [],
-    snapshot: context.report.snapshot ?? {
-      framework: "Unknown",
-      hasRobots: false,
-      hasSitemap: false,
-      hasMetadataFile: false,
-      routeCount: 0
-    },
-    seoScoreContribution: 0
-  };
+  if (hasSourceRepo) {
+    // Copy already includes node_modules from source — skip redundant install
+    // unless new dependencies were added by fixes (none of the current fixes do)
+    const needsReinstall = selectedFixes.some(
+      (f) => f.targetFile.includes("package.json") || f.patchPreview.includes("package.json")
+    );
+    if (needsReinstall) {
+      await installDependencies(optimizedPath);
+    }
+    postStatic = await runStaticAnalysis(optimizedPath);
+  } else {
+    postStatic = {
+      findings: [],
+      snapshot: context.report.snapshot ?? {
+        framework: "Unknown",
+        hasRobots: false,
+        hasSitemap: false,
+        hasMetadataFile: false,
+        routeCount: 0,
+      },
+      seoScoreContribution: 0,
+    };
+  }
 
   const validation = hasSourceRepo
     ? await runValidation(optimizedPath)
-    : [{ name: "repo-check", success: true, output: "No repository to validate — site-only analysis." }];
-
-  if (hasSourceRepo) {
-    postStatic = await runStaticAnalysis(optimizedPath);
-  }
+    : [
+      {
+        name: "repo-check",
+        success: true,
+        output: "No repository to validate — site-only analysis.",
+      },
+    ];
 
   let branchName = "n/a";
   let commitHash: string | undefined;
@@ -90,7 +101,11 @@ export async function runApplyPipeline(
     );
   }
 
-  const updatedScores = scoreAfterFixes(context.report.baselineScores, postStatic, selectedFixes);
+  const updatedScores = scoreAfterFixes(
+    context.report.baselineScores,
+    postStatic,
+    selectedFixes
+  );
 
   const deployHint = hasSourceRepo
     ? "Deploy from the optimized directory or open a PR from the generated branch for review."
@@ -112,6 +127,6 @@ export async function runApplyPipeline(
     deployHint,
     appliedFixes: selectedFixes,
     validation,
-    updatedScores
+    updatedScores,
   };
 }

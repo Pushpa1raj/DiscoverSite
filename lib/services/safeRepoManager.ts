@@ -1,4 +1,4 @@
-import { mkdir, cp, writeFile, rm } from "node:fs/promises";
+import { access, mkdir, cp, writeFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
@@ -95,7 +95,6 @@ export async function createCommit(
 }
 
 async function fileExists(filePath: string): Promise<boolean> {
-  const { access } = await import("node:fs/promises");
   try {
     await access(filePath);
     return true;

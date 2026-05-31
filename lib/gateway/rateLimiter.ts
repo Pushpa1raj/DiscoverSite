@@ -7,6 +7,23 @@ const RATE_LIMIT_WINDOW_MS = 60_000;
 const RATE_LIMIT_MAX_REQUESTS = 30;
 const store = new Map<string, RateLimiterEntry>();
 
+// Periodic cleanup of expired entries to prevent unbounded memory growth
+const CLEANUP_INTERVAL_MS = 5 * 60_000; // 5 minutes
+
+setInterval(() => {
+  const now = Date.now();
+  let cleaned = 0;
+  for (const [key, entry] of store) {
+    if (now > entry.resetAt) {
+      store.delete(key);
+      cleaned++;
+    }
+  }
+  if (cleaned > 0) {
+    console.log(`[rateLimiter] cleaned up ${cleaned} expired rate limit entries`);
+  }
+}, CLEANUP_INTERVAL_MS);
+
 export function checkRateLimit(key: string): {
   allowed: boolean;
   retryAfterSeconds?: number;

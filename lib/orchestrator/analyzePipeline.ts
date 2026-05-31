@@ -99,26 +99,31 @@ export async function runAnalyzePipeline(request: AnalyzeRequest): Promise<Analy
 
   const siteUrl = request.siteUrl ? new URL(request.siteUrl).toString() : undefined;
 
-  // --- Clone repository if provided ---
+  // --- Create workspace ---
   const workspace = await createRunWorkspace(runId);
-  let staticAnalysis: StaticAnalysisResult = EMPTY_STATIC;
 
-  if (hasRepo) {
-    await cloneRepository(request.repositoryUrl!, workspace.sourcePath, request.branch);
-    await installDependencies(workspace.sourcePath);
-    staticAnalysis = await runStaticAnalysis(workspace.sourcePath);
-  }
+  // --- Run repo branch and site branch in parallel ---
+  const [staticResult, crawlResult] = await Promise.all([
+    // Repo branch (blocking I/O)
+    (async (): Promise<StaticAnalysisResult> => {
+      if (!hasRepo) return EMPTY_STATIC;
+      await cloneRepository(request.repositoryUrl!, workspace.sourcePath, request.branch);
+      await installDependencies(workspace.sourcePath);
+      return await runStaticAnalysis(workspace.sourcePath);
+    })(),
 
+    // Site branch (network I/O, independent)
+    (async (): Promise<CrawlMetrics> => {
+      if (!hasSite || !siteUrl) return EMPTY_CRAWL;
+      return await crawlWebsite(siteUrl);
+    })()
+  ]);
+
+  const staticAnalysis = staticResult;
+  const crawl = crawlResult;
   const snapshot = staticAnalysis.snapshot;
 
-  // --- Crawl website if provided ---
-  let crawl: CrawlMetrics = EMPTY_CRAWL;
-
-  if (hasSite && siteUrl) {
-    crawl = await crawlWebsite(siteUrl);
-  }
-
-  // --- GEO analysis (uses both crawl + static when available) ---
+  // --- GEO analysis (uses crawl + static results) ---
   let geoAnalysis: GeoAnalysisResult = EMPTY_GEO;
 
   if (hasSite && siteUrl) {

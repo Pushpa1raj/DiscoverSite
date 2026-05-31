@@ -5,10 +5,6 @@ interface PageSnapshot {
   responseTimeMs: number;
 }
 
-function extractTagContent(html: string, pattern: RegExp): string | undefined {
-  const match = html.match(pattern);
-  return match?.[1]?.trim();
-}
 
 function clampScore(score: number): number {
   return Math.max(0, Math.min(100, Math.round(score)));
@@ -38,31 +34,26 @@ async function fetchSnapshotByPlaywright(siteUrl: string): Promise<PageSnapshot 
   }
 
   try {
-    const dynamicImport = new Function("modulePath", "return import(modulePath);") as (
-      modulePath: string
-    ) => Promise<any>;
+    // webpackIgnore prevents Next.js from bundling this optional peer dep
+    // @ts-expect-error -- playwright is an optional runtime dep, not installed in dev
+    const playwright = await import(/* webpackIgnore: true */ "playwright");
+    const browser = await playwright.chromium.launch({ headless: true });
 
-    const playwright = await dynamicImport("playwright");
-    const browser = await playwright.chromium.launch({
-      headless: true
-    });
+    try {
+      const page = await browser.newPage();
+      const started = Date.now();
+      await page.goto(siteUrl, { waitUntil: "networkidle", timeout: 60_000 });
 
-    const page = await browser.newPage();
-    const started = Date.now();
-    await page.goto(siteUrl, {
-      waitUntil: "networkidle",
-      timeout: 60_000
-    });
+      const html = await page.content();
+      const responseTimeMs = Date.now() - started;
 
-    const html = await page.content();
-    const responseTimeMs = Date.now() - started;
-    await browser.close();
-
-    return {
-      html,
-      responseTimeMs
-    };
-  } catch {
+      return { html, responseTimeMs };
+    } finally {
+      await browser.close();
+    }
+  } catch (err) {
+    // Gracefully degrade when playwright is not installed or navigation fails
+    console.warn("[crawler] Playwright unavailable, falling back to HTTP fetch:", (err as Error).message);
     return undefined;
   }
 }
@@ -72,11 +63,12 @@ export async function crawlWebsite(siteUrl: string): Promise<CrawlMetrics> {
 
   const { html, responseTimeMs } = snapshot;
 
-  const title = extractTagContent(html, /<title[^>]*>([^<]+)<\/title>/i);
-  const description = extractTagContent(
-    html,
-    /<meta\s+name=["']description["']\s+content=["']([^"']+)["'][^>]*>/i
-  );
+  // Use DOM-like parsing for more robust extraction
+  const titleMatch = html.match(/<title[^>]*>([\s\S]*?)<\/title>/i);
+  const title = titleMatch?.[1]?.replace(/<[^>]+>/g, "").trim() || undefined;
+  
+  const descriptionMatch = html.match(/<meta[^>]*name=["']description["'][^>]*>/i);
+  const description = descriptionMatch?.[0]?.match(/content=["']([^"']*)/i)?.[1] || undefined;
 
   const h1Count = (html.match(/<h1\b/gi) || []).length;
   const headingCount = (html.match(/<h[1-6]\b/gi) || []).length;
@@ -89,13 +81,11 @@ export async function crawlWebsite(siteUrl: string): Promise<CrawlMetrics> {
 
   if (process.env.ENABLE_LIGHTHOUSE === "true") {
     try {
-      const dynamicImport = new Function("modulePath", "return import(modulePath);") as (
-        modulePath: string
-      ) => Promise<any>;
-
       const [{ default: lighthouse }, { launch }] = await Promise.all([
-        dynamicImport("lighthouse"),
-        dynamicImport("chrome-launcher")
+        // @ts-expect-error -- lighthouse is an optional runtime dep
+        import(/* webpackIgnore: true */ "lighthouse"),
+        // @ts-expect-error -- chrome-launcher is an optional runtime dep
+        import(/* webpackIgnore: true */ "chrome-launcher")
       ]);
 
       const chrome = await launch({ chromeFlags: ["--headless", "--no-sandbox"] });
@@ -115,7 +105,8 @@ export async function crawlWebsite(siteUrl: string): Promise<CrawlMetrics> {
       }
 
       lighthouseAvailable = true;
-    } catch {
+    } catch (err) {
+      console.warn("[crawler] Lighthouse unavailable, using heuristic scores:", (err as Error).message);
       lighthouseAvailable = false;
     }
   }
